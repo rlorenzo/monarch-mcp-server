@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
 
+from gql import gql
+
 from monarch_mcp_server.app import mcp
 from monarch_mcp_server.client import get_monarch_client
 from monarch_mcp_server.helpers import (
@@ -899,6 +901,117 @@ async def bulk_categorize_transactions(
         return json_success(results)
     except Exception as e:
         return json_error("bulk_categorize_transactions", e)
+
+
+# Monarch's general bulk primitive: `updates` takes the same TransactionUpdateParams
+# shape a single-transaction update does, so it can set any field, not just
+# reviewStatus. bulk_categorize_transactions above predates this and still fans out
+# one update_transaction call per ID; moving it here would trade its per-item partial
+# success reporting for this endpoint's all-or-nothing
+# expectedAffectedTransactionCount, so it is left alone rather than changed in passing.
+BULK_UPDATE_TRANSACTIONS_MUTATION = gql("""
+mutation Common_BulkUpdateTransactionsMutation(
+  $selectedTransactionIds: [ID!]
+  $excludedTransactionIds: [ID!]
+  $allSelected: Boolean!
+  $expectedAffectedTransactionCount: Int!
+  $updates: TransactionUpdateParams!
+  $filters: TransactionFilterInput
+) {
+  bulkUpdateTransactions(
+    selectedTransactionIds: $selectedTransactionIds
+    excludedTransactionIds: $excludedTransactionIds
+    updates: $updates
+    allSelected: $allSelected
+    expectedAffectedTransactionCount: $expectedAffectedTransactionCount
+    filters: $filters
+  ) {
+    success
+    affectedCount
+    errors {
+      message
+    }
+  }
+}
+""")
+
+
+@mcp.tool()
+async def bulk_mark_transactions_reviewed(
+    transaction_ids: List[str],
+    reviewed: bool = True,
+    dry_run: bool = False,
+) -> str:
+    """
+    Clear (or set) the needs_review flag on many transactions in one request.
+
+    Uses Monarch's own bulk endpoint, the same one the web client calls when
+    you select transactions and change Review status, so a long review queue
+    costs one round trip instead of one per transaction.
+
+    Args:
+        transaction_ids: Transaction IDs to update.
+        reviewed: True marks them reviewed, False re-flags them for review.
+        dry_run: If True, report what would change without writing.
+
+    Returns:
+        ``total`` (IDs sent) alongside ``affected_count`` as reported by
+        Monarch. Compare the two: they are the same field the dry run
+        previews, and a mismatch means the batch did not land whole.
+    """
+    try:
+        if not transaction_ids:
+            return json_error(
+                "bulk_mark_transactions_reviewed",
+                ValueError("transaction_ids must not be empty"),
+            )
+
+        # reviewStatus is Monarch's enum, spelled as the web client sends it.
+        status = "reviewed" if reviewed else "needs_review"
+
+        if dry_run:
+            return json_success({
+                "dry_run": True,
+                "total": len(transaction_ids),
+                "transaction_ids": list(transaction_ids),
+                "review_status": status,
+            })
+
+        client = await get_monarch_client()
+        result = await client.gql_call(
+            operation="Common_BulkUpdateTransactionsMutation",
+            graphql_query=BULK_UPDATE_TRANSACTIONS_MUTATION,
+            variables={
+                "selectedTransactionIds": list(transaction_ids),
+                "excludedTransactionIds": [],
+                # allSelected drives a filter-based update server side. Always
+                # False here: this tool updates exactly the IDs it was handed,
+                # never "everything matching the current filters".
+                "allSelected": False,
+                "expectedAffectedTransactionCount": len(transaction_ids),
+                "updates": {"reviewStatus": status},
+                "filters": None,
+            },
+        )
+
+        errors = payload_errors(result, "bulkUpdateTransactions")
+        if errors:
+            return json_rejected("bulk_mark_transactions_reviewed", errors)
+
+        payload = result.get("bulkUpdateTransactions") or {}
+        if not payload.get("success"):
+            return json_rejected(
+                "bulk_mark_transactions_reviewed",
+                {"message": "Monarch reported the bulk update did not succeed"},
+            )
+
+        return json_success({
+            "total": len(transaction_ids),
+            "affected_count": payload.get("affectedCount"),
+            "review_status": status,
+        })
+    except Exception as e:
+        return json_error("bulk_mark_transactions_reviewed", e)
 
 
 @mcp.tool()

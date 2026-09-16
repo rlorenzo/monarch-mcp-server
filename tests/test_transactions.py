@@ -13,6 +13,7 @@ from monarch_mcp_server.tools.transactions import (
     update_transaction_notes,
     mark_transaction_reviewed,
     bulk_categorize_transactions,
+    bulk_mark_transactions_reviewed,
     search_transactions,
     get_transaction_details,
     delete_transaction,
@@ -1236,3 +1237,108 @@ class TestCreateTransactionReportsRejection:
         )
         assert result["success"] is False
         assert "Invalid account" in json.dumps(result)
+
+
+class TestBulkMarkTransactionsReviewed:
+    """Tests for bulk_mark_transactions_reviewed tool."""
+
+    @staticmethod
+    def _responds(client, *, success=True, affected=3, errors=None):
+        client.gql_call.return_value = {
+            "bulkUpdateTransactions": {
+                "success": success,
+                "affectedCount": affected,
+                "errors": errors,
+            }
+        }
+
+    async def test_one_request_for_many_transactions(self, mock_monarch_client):
+        """The whole point: a batch is one round trip, not N."""
+        self._responds(mock_monarch_client)
+
+        data = json.loads(
+            await bulk_mark_transactions_reviewed(
+                transaction_ids=["txn_1", "txn_2", "txn_3"]
+            )
+        )
+
+        assert mock_monarch_client.gql_call.call_count == 1
+        assert data["affected_count"] == 3
+        assert data["review_status"] == "reviewed"
+        # Same key the dry run reports, so a caller can compare the two runs
+        # and spot a batch that did not land whole.
+        assert data["total"] == 3
+
+    async def test_sends_only_review_status_and_the_given_ids(
+        self, mock_monarch_client
+    ):
+        """No category is sent, and allSelected stays False.
+
+        allSelected=True would make Monarch update everything matching the
+        filters instead of the listed IDs, which is the difference between
+        marking three transactions and marking the whole account.
+        """
+        self._responds(mock_monarch_client)
+
+        await bulk_mark_transactions_reviewed(transaction_ids=["txn_1", "txn_2"])
+
+        variables = mock_monarch_client.gql_call.call_args.kwargs["variables"]
+        assert variables["selectedTransactionIds"] == ["txn_1", "txn_2"]
+        assert variables["allSelected"] is False
+        assert variables["expectedAffectedTransactionCount"] == 2
+        assert variables["updates"] == {"reviewStatus": "reviewed"}
+
+    async def test_reviewed_false_re_flags(self, mock_monarch_client):
+        self._responds(mock_monarch_client, affected=1)
+
+        await bulk_mark_transactions_reviewed(
+            transaction_ids=["txn_1"], reviewed=False
+        )
+
+        variables = mock_monarch_client.gql_call.call_args.kwargs["variables"]
+        assert variables["updates"] == {"reviewStatus": "needs_review"}
+
+    async def test_payload_level_rejection_is_a_failure(self, mock_monarch_client):
+        """Monarch refuses inside an HTTP 200, so no exception is raised."""
+        self._responds(
+            mock_monarch_client, success=False, errors={"message": "nope"}
+        )
+
+        data = json.loads(
+            await bulk_mark_transactions_reviewed(transaction_ids=["txn_1"])
+        )
+
+        assert data["success"] is False
+
+    async def test_success_false_without_errors_is_still_a_failure(
+        self, mock_monarch_client
+    ):
+        """A falsy success with a null errors object must not read as done."""
+        self._responds(mock_monarch_client, success=False, affected=0)
+
+        data = json.loads(
+            await bulk_mark_transactions_reviewed(transaction_ids=["txn_1"])
+        )
+
+        assert data["success"] is False
+
+    async def test_dry_run_writes_nothing(self, mock_monarch_client):
+        self._responds(mock_monarch_client)
+
+        data = json.loads(
+            await bulk_mark_transactions_reviewed(
+                transaction_ids=["txn_1", "txn_2"], dry_run=True
+            )
+        )
+
+        assert data["dry_run"] is True
+        assert data["total"] == 2
+        mock_monarch_client.gql_call.assert_not_called()
+
+    async def test_empty_list_is_rejected_before_writing(self, mock_monarch_client):
+        self._responds(mock_monarch_client)
+
+        data = json.loads(await bulk_mark_transactions_reviewed(transaction_ids=[]))
+
+        assert data["error"] is True
+        mock_monarch_client.gql_call.assert_not_called()
