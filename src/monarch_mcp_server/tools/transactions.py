@@ -19,6 +19,7 @@ from monarch_mcp_server.helpers import (
     json_rejected,
     payload_errors,
     json_success,
+    require_nonblank,
     tool_response_envelope,
 )
 
@@ -647,6 +648,7 @@ async def create_transaction(
         update_balance: Whether to update the account balance (default: false)
     """
     try:
+        require_nonblank(merchant_name, "merchant_name")
         client = await get_monarch_client()
 
         transaction_data: Dict[str, Any] = {
@@ -705,6 +707,7 @@ async def update_transaction(
         if category_id is not None:
             update_data["category_id"] = category_id
         if merchant_name is not None:
+            require_nonblank(merchant_name, "merchant_name")
             update_data["merchant_name"] = merchant_name
         if goal_id is not None:
             update_data["goal_id"] = goal_id

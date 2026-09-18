@@ -936,6 +936,18 @@ class TestCreateTransaction:
         )
         assert "create_transaction" in result
 
+    async def test_a_blank_merchant_name_is_refused(self, mock_monarch_client):
+        """Monarch would make a junk merchant out of a whitespace-only name."""
+        result = await create_transaction(
+            date="2026-03-15",
+            account_id="acc-1",
+            amount=-25.00,
+            merchant_name="   ",
+            category_id="cat-1",
+        )
+        assert json.loads(result)["error"] is True
+        mock_monarch_client.create_transaction.assert_not_called()
+
 
 class TestUpdateTransaction:
     async def test_updates_transaction(self):
@@ -976,6 +988,19 @@ class TestUpdateTransaction:
         mock_monarch_client.update_transaction.side_effect = Exception("Not found")
         result = await update_transaction("bad-id")
         assert "update_transaction" in result
+
+    async def test_a_blank_merchant_name_is_refused(self, mock_monarch_client):
+        """Renaming a merchant to whitespace would orphan the transaction."""
+        result = await update_transaction("txn-1", merchant_name="   ")
+        assert json.loads(result)["error"] is True
+        mock_monarch_client.update_transaction.assert_not_called()
+
+    async def test_an_omitted_merchant_name_is_still_allowed(self, mock_monarch_client):
+        """The guard must not turn 'leave the merchant alone' into an error."""
+        await update_transaction("txn-1", notes="No merchant here")
+        mock_monarch_client.update_transaction.assert_called_once_with(
+            transaction_id="txn-1", notes="No merchant here"
+        )
 
 
 class TestCategorizeTransaction:
@@ -1236,3 +1261,5 @@ class TestCreateTransactionReportsRejection:
         )
         assert result["success"] is False
         assert "Invalid account" in json.dumps(result)
+
+
