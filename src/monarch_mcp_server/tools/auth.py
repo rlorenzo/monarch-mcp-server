@@ -93,9 +93,7 @@ async def check_auth_status() -> str:
     try:
         status = _describe_session(secure_session.load_session()) + "\n"
 
-        email = os.getenv("MONARCH_EMAIL")
-        if email:
-            status += f"📧 Environment email: {email}\n"
+        status += f"📧 Environment email set: {bool(os.getenv('MONARCH_EMAIL'))}\n"
 
         status += (
             "\n💡 Try get_accounts to test connection or run login_setup.py if needed."

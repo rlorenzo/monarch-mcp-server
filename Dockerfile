@@ -1,6 +1,9 @@
 # Keep the uv version aligned with .github/workflows/ci.yml.
-FROM ghcr.io/astral-sh/uv:0.12.10-python3.12-trixie-slim
+# Tag: uv:0.12.10-python3.12-trixie-slim (pinned by digest; Dependabot bumps this).
+FROM ghcr.io/astral-sh/uv@sha256:4bf11151c225e2a4d60e2a576b67d925660055199389d9a64fbdc02b6f3d43d5
 
+# 0.0.0.0 is non-loopback, so the server refuses to start over HTTP unless
+# MONARCH_MCP_HTTP_TOKEN is passed at run time (never bake it into the image).
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_NO_CACHE=1 \

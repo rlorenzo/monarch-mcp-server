@@ -859,6 +859,10 @@ async def bulk_categorize_transactions(
             "errors": [],
         }
 
+        # Cap concurrent mutations so a large batch doesn't fire thousands of
+        # simultaneous requests at Monarch (rate-limit / account-flag risk).
+        semaphore = asyncio.Semaphore(5)
+
         async def _update_one(txn_id: str) -> Any:
             update_params: Dict[str, Any] = {
                 "transaction_id": txn_id,
@@ -866,12 +870,13 @@ async def bulk_categorize_transactions(
             }
             if mark_reviewed:
                 update_params["needs_review"] = False
-            # Returned, not discarded: Monarch refuses a write by putting
-            # errors in the payload of an HTTP 200, so the absence of an
-            # exception says nothing about whether anything was written.
-            return await client.update_transaction(**update_params)
+            async with semaphore:
+                # Returned, not discarded: Monarch refuses a write by putting
+                # errors in the payload of an HTTP 200, so the absence of an
+                # exception says nothing about whether anything was written.
+                return await client.update_transaction(**update_params)
 
-        # Use asyncio.gather for concurrent updates
+        # Use asyncio.gather for concurrent (but bounded) updates
         tasks = [_update_one(txn_id) for txn_id in transaction_ids]
         outcomes = await asyncio.gather(*tasks, return_exceptions=True)
 
