@@ -254,6 +254,18 @@ class TestCheckAuthStatus:
             result = asyncio.run(tools_auth.check_auth_status())
         assert "No Monarch session" in result
 
+    def test_env_email_reported_as_bool_not_value(self, monkeypatch):
+        from monarch_mcp_server.tools import auth as tools_auth
+
+        monkeypatch.setenv("MONARCH_EMAIL", "user@example.com")
+        with patch(
+            "monarch_mcp_server.tools.auth.secure_session.load_session",
+            return_value=None,
+        ):
+            result = asyncio.run(tools_auth.check_auth_status())
+        assert "user@example.com" not in result
+        assert "Environment email set: True" in result
+
 
 class TestElicitNotSupported:
     """Older MCP SDKs (<1.10) do not expose Context.elicit."""
